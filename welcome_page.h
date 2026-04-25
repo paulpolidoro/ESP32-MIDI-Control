@@ -327,8 +327,15 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
       <fieldset>
         <legend>Modo de acionamento</legend>
         <div class="row">
+          <label class="block" for="f0-name">Nome (até 10 caracteres)</label>
+          <input id="f0-name" maxlength="10" style="width:100%; font:inherit; font-size:0.875rem; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.6rem;" placeholder="Foot A">
+        </div>
+        <div class="row">
           <label class="block" for="f0-mode">Modo</label>
-          <select id="f0-mode" class="mode-select" disabled><option selected>Press</option></select>
+          <select id="f0-mode" class="mode-select">
+            <option value="press" selected>Press</option>
+            <option value="tap">Tap tempo</option>
+          </select>
         </div>
       </fieldset>
       <fieldset>
@@ -373,8 +380,15 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
       <fieldset>
         <legend>Modo de acionamento</legend>
         <div class="row">
+          <label class="block" for="f1-name">Nome (até 10 caracteres)</label>
+          <input id="f1-name" maxlength="10" style="width:100%; font:inherit; font-size:0.875rem; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.6rem;" placeholder="Foot B">
+        </div>
+        <div class="row">
           <label class="block" for="f1-mode">Modo</label>
-          <select id="f1-mode" class="mode-select" disabled><option selected>Press</option></select>
+          <select id="f1-mode" class="mode-select">
+            <option value="press" selected>Press</option>
+            <option value="tap">Tap tempo</option>
+          </select>
         </div>
       </fieldset>
       <fieldset>
@@ -419,8 +433,15 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
       <fieldset>
         <legend>Modo de acionamento</legend>
         <div class="row">
+          <label class="block" for="f2-name">Nome (até 10 caracteres)</label>
+          <input id="f2-name" maxlength="10" style="width:100%; font:inherit; font-size:0.875rem; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.6rem;" placeholder="Foot C">
+        </div>
+        <div class="row">
           <label class="block" for="f2-mode">Modo</label>
-          <select id="f2-mode" class="mode-select" disabled><option selected>Press</option></select>
+          <select id="f2-mode" class="mode-select">
+            <option value="press" selected>Press</option>
+            <option value="tap">Tap tempo</option>
+          </select>
         </div>
       </fieldset>
       <fieldset>
@@ -465,8 +486,15 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
       <fieldset>
         <legend>Modo de acionamento</legend>
         <div class="row">
+          <label class="block" for="f3-name">Nome (até 10 caracteres)</label>
+          <input id="f3-name" maxlength="10" style="width:100%; font:inherit; font-size:0.875rem; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:0.5rem 0.6rem;" placeholder="Foot D">
+        </div>
+        <div class="row">
           <label class="block" for="f3-mode">Modo</label>
-          <select id="f3-mode" class="mode-select" disabled><option selected>Press</option></select>
+          <select id="f3-mode" class="mode-select">
+            <option value="press" selected>Press</option>
+            <option value="tap">Tap tempo</option>
+          </select>
         </div>
       </fieldset>
       <fieldset>
@@ -518,7 +546,7 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
     (function () {
       var PANEL_IDS = ['panel-a', 'panel-b', 'panel-c', 'panel-d'];
       var emptyFoot = function () {
-        return { press: 'unique', listA: '', listB: '', ledA: 'off', ledB: 'off' };
+        return { name: '', mode: 'press', press: 'unique', listA: '', listB: '', ledA: 'off', ledB: 'off' };
       };
       var emptyPreset = function () {
         return { feet: [emptyFoot(), emptyFoot(), emptyFoot(), emptyFoot()] };
@@ -534,6 +562,26 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
       function updateFootUi(i) {
         var panel = footPanelEl(i);
         if (!panel) return;
+        var modeSel = document.getElementById('f' + i + '-mode');
+        var mode = modeSel ? modeSel.value : 'press';
+        var isTap = mode === 'tap';
+        panel.classList.toggle('tap-mode', isTap);
+        panel.querySelectorAll('fieldset').forEach(function(fs, idx){
+          // fieldset 0 é o seletor de modo; os demais são do press
+          if (idx > 0) fs.hidden = isTap;
+        });
+
+        // No modo Tap: força nome e bloqueia edição
+        var nameEl = document.getElementById('f' + i + '-name');
+        if (nameEl) {
+          if (isTap) {
+            nameEl.value = 'TAP TEMPO';
+            nameEl.disabled = true;
+          } else {
+            nameEl.disabled = false;
+          }
+        }
+
         var u = document.querySelector('input[name="foot' + i + '_press"][value="unique"]');
         var unique = u && u.checked;
         panel.classList.toggle('unique-mode', unique);
@@ -556,9 +604,22 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
 
       function readPresetFromForm() {
         var feet = [];
+        var tapChosen = false;
         for (var i = 0; i < 4; i++) {
           var pr = document.querySelector('input[name="foot' + i + '_press"]:checked');
+          var modeSel = document.getElementById('f' + i + '-mode');
+          var nameEl = document.getElementById('f' + i + '-name');
+          var rawName = nameEl ? (nameEl.value || '') : '';
+          rawName = String(rawName).trim().slice(0, 10);
+          var mode = modeSel ? modeSel.value : 'press';
+          if (mode === 'tap') {
+            if (tapChosen) mode = 'press';
+            tapChosen = true;
+            rawName = 'TAP TEMPO';
+          }
           feet.push({
+            name: rawName,
+            mode: mode,
             press: pr ? pr.value : 'unique',
             listA: (document.getElementById('f' + i + '-list-a') || {}).value || '',
             listB: (document.getElementById('f' + i + '-list-b') || {}).value || '',
@@ -576,8 +637,21 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
 
       function applyPresetToForm(data) {
         var feet = (data && data.feet) ? data.feet : [];
+        var tapChosen = false;
         for (var i = 0; i < 4; i++) {
           var f = feet[i] || emptyFoot();
+          var nameEl = document.getElementById('f' + i + '-name');
+          var modeSel = document.getElementById('f' + i + '-mode');
+          var mode = (f.mode === 'tap') ? 'tap' : 'press';
+          if (mode === 'tap') {
+            if (tapChosen) mode = 'press';
+            tapChosen = true;
+          }
+          if (modeSel) modeSel.value = mode;
+          if (nameEl) {
+            if (mode === 'tap') nameEl.value = 'TAP TEMPO';
+            else nameEl.value = (f.name || '').toString().slice(0, 10);
+          }
           var press = f.press === 'unique' ? 'unique' : 'toggle';
           var pu = document.querySelector('input[name="foot' + i + '_press"][value="' + press + '"]');
           if (pu) pu.checked = true;
@@ -608,10 +682,28 @@ const char WELCOME_HTML[] PROGMEM = R"rawliteral(
       }
 
       function bindPressRadios() {
+        var modeChanging = false;
         for (var fi = 0; fi < 4; fi++) {
           (function (footIdx) {
             document.querySelectorAll('input[name="foot' + footIdx + '_press"]').forEach(function (r) {
               r.addEventListener('change', function () { updateFootUi(footIdx); });
+            });
+            var ms = document.getElementById('f' + footIdx + '-mode');
+            if (ms) ms.addEventListener('change', function () {
+              if (modeChanging) { updateFootUi(footIdx); return; }
+
+              // Permite somente 1 foot em Tap por preset: ao selecionar Tap aqui, força os outros para Press.
+              if (ms.value === 'tap') {
+                modeChanging = true;
+                for (var j = 0; j < 4; j++) {
+                  if (j === footIdx) continue;
+                  var other = document.getElementById('f' + j + '-mode');
+                  if (other && other.value === 'tap') other.value = 'press';
+                }
+                modeChanging = false;
+              }
+              updateFootUi(footIdx);
+              for (var k = 0; k < 4; k++) updateFootUi(k);
             });
           })(fi);
         }

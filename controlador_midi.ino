@@ -30,8 +30,14 @@ Preferences gMidiPrefs;
 static Display display(0x3C, 21, 27);
 static bool displayOk = false;
 
+// `footPresetPress()` é definido antes do objeto global `ble`.
+extern Bluetooth ble;
+
 static void footPresetPress(int footId, Foot* foot) {
-  MidiPresetRunner::handleFootPress(footId, foot);
+  uint16_t newBpm = 0;
+  bool tapUpdated = MidiPresetRunner::handleFootPress(footId, foot, &newBpm);
+  (void)tapUpdated;
+  (void)newBpm;
 }
 
 const int NUM_FEET = 4;
@@ -194,6 +200,7 @@ void setup() {
 #endif
 
   MidiPresetRunner::begin(gMidiPrefs, &ble);
+  if (displayOk) display.setPreset((uint8_t)MidiPresetRunner::getActivePreset());
 
   for (int i = 0; i < NUM_FEET; i++) {
     feet[i]->begin();
@@ -203,7 +210,15 @@ void setup() {
   ble.setOnReceive(onBleReceive);
 
   if (displayOk) {
-    display.showMessage("Conectando...", nullptr, nullptr, nullptr);
+    bool anyTap = MidiPresetRunner::isFootTapMode(0) || MidiPresetRunner::isFootTapMode(1) || MidiPresetRunner::isFootTapMode(2) || MidiPresetRunner::isFootTapMode(3);
+    display.showDashboard(
+      MidiPresetRunner::getFootName(0),
+      MidiPresetRunner::getFootName(1),
+      MidiPresetRunner::getFootName(2),
+      MidiPresetRunner::getFootName(3),
+      anyTap,
+      MidiPresetRunner::getAnyTapBpm()
+    );
   }
 }
 
@@ -217,6 +232,48 @@ void loop() {
   for (int i = 0; i < NUM_FEET; i++) feet[i]->update();
   ble.update();
   if (displayOk) display.update();
+  MidiPresetRunner::update(feet);
+
+  if (displayOk) {
+    static uint8_t lastPresetShown = 0;
+    static uint16_t lastBpmShown = 0;
+    static uint32_t lastNameSig = 0;
+    uint8_t presetNow = (uint8_t)MidiPresetRunner::getActivePreset();
+    uint16_t bpmNow = MidiPresetRunner::getAnyTapBpm();
+
+    const char* a = MidiPresetRunner::getFootName(0);
+    const char* b = MidiPresetRunner::getFootName(1);
+    const char* c = MidiPresetRunner::getFootName(2);
+    const char* d = MidiPresetRunner::getFootName(3);
+
+    // Se algum foot estiver em tap (mesmo sem BPM ainda), a gente deixa o BPM como 0 (não mostra texto).
+    bool anyTap = MidiPresetRunner::isFootTapMode(0) || MidiPresetRunner::isFootTapMode(1) || MidiPresetRunner::isFootTapMode(2) || MidiPresetRunner::isFootTapMode(3);
+    if (!anyTap) bpmNow = 0;
+
+    // Assinatura simples dos nomes para redesenhar quando mudar via web (sem trocar preset).
+    auto sigStr = [](uint32_t s, const char* p) -> uint32_t {
+      if (!p) return s;
+      while (*p) {
+        s = (s ^ (uint8_t)*p) * 16777619u;
+        p++;
+      }
+      return s;
+    };
+    uint32_t nameSig = 2166136261u;
+    nameSig = sigStr(nameSig, a);
+    nameSig = sigStr(nameSig, b);
+    nameSig = sigStr(nameSig, c);
+    nameSig = sigStr(nameSig, d);
+
+    if (presetNow != lastPresetShown) display.setPreset(presetNow);
+
+    if (presetNow != lastPresetShown || bpmNow != lastBpmShown || nameSig != lastNameSig) {
+      display.showDashboard(a, b, c, d, anyTap, bpmNow);
+      lastPresetShown = presetNow;
+      lastBpmShown = bpmNow;
+      lastNameSig = nameSig;
+    }
+  }
 
   static bool wasConnected = false;
   bool connected = ble.isConnected();
@@ -224,12 +281,10 @@ void loop() {
   if (connected && !wasConnected) {
     if (displayOk) {
       display.setBleState(Display::BleState::Connected);
-      display.showMessage("Conectado", nullptr, nullptr, nullptr);
     }
   } else if (!connected && wasConnected) {
     if (displayOk) {
       display.setBleState(Display::BleState::Connecting);
-      display.showMessage("Conectando...", nullptr, nullptr, nullptr);
     }
   } else if (!connected && !wasConnected) {
     if (displayOk) display.setBleState(Display::BleState::Connecting);
