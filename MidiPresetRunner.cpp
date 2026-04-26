@@ -1,6 +1,7 @@
 #include "MidiPresetRunner.h"
 #include "Foot.h"
 #include "Bluetooth.h"
+#include "TapTempo.h"
 #include <ArduinoJson.h>
 #include <strings.h>
 
@@ -49,11 +50,7 @@ static void applyFootLed(Foot* foot, PresetLedMode m) {
 
 static FootCfg s_cfg[4];
 static StaticJsonDocument<8192> s_jsonDoc;
-
-static uint8_t s_tapCount[4] = { 0, 0, 0, 0 };
-static unsigned long s_lastTapMs[4] = { 0, 0, 0, 0 };
-static uint16_t s_tapBpm[4] = { 0, 0, 0, 0 };
-static unsigned long s_nextBeatMs[4] = { 0, 0, 0, 0 };
+static TapTempo s_tap;
 
 void MidiPresetRunner::begin(Preferences& prefs, Bluetooth* ble) {
   s_prefs = &prefs;
@@ -123,6 +120,7 @@ void MidiPresetRunner::runCommandList(const String& list) {
 }
 
 void MidiPresetRunner::parsePresetJson(const String& json) {
+  s_tap.resetAll();
   for (int i = 0; i < 4; i++) {
     s_cfg[i].name = "";
     s_cfg[i].mode = FootMode::Press;
@@ -132,11 +130,6 @@ void MidiPresetRunner::parsePresetJson(const String& json) {
     s_cfg[i].ledA = PresetLedMode::Off;
     s_cfg[i].ledB = PresetLedMode::Off;
     s_cfg[i].valid = false;
-
-    s_tapCount[i] = 0;
-    s_lastTapMs[i] = 0;
-    s_tapBpm[i] = 0;
-    s_nextBeatMs[i] = 0;
   }
 
   if (json.length() < 8) return;
@@ -161,6 +154,7 @@ void MidiPresetRunner::parsePresetJson(const String& json) {
     }
     const char* mode = fo["mode"] | "press";
     s_cfg[idx].mode = (!strcasecmp(mode, "tap") || !strcasecmp(mode, "taptempo") || !strcasecmp(mode, "tap_tempo")) ? FootMode::TapTempo : FootMode::Press;
+    s_tap.setEnabled((int)idx, s_cfg[idx].mode == FootMode::TapTempo);
     const char* press = fo["press"] | "unique";
     s_cfg[idx].uniqueMode = (strcmp(press, "unique") == 0);
     s_cfg[idx].listA = fo["listA"].as<String>();
@@ -185,14 +179,12 @@ bool MidiPresetRunner::isFootTapMode(int footId) {
 
 uint16_t MidiPresetRunner::getFootTapBpm(int footId) {
   if (footId < 0 || footId > 3) return 0;
-  return s_tapBpm[footId];
+  return s_tap.getBpm(footId);
 }
 
 uint16_t MidiPresetRunner::getAnyTapBpm() {
-  for (int i = 0; i < 4; i++) {
-    if (isFootTapMode(i) && s_tapBpm[i] > 0) return s_tapBpm[i];
-  }
-  return 0;
+  bool enabled[4] = { isFootTapMode(0), isFootTapMode(1), isFootTapMode(2), isFootTapMode(3) };
+  return s_tap.getAnyBpm(enabled);
 }
 
 void MidiPresetRunner::reloadFromStorage() {
@@ -242,53 +234,6 @@ void MidiPresetRunner::setToggleNextIsBSide(int footId, bool nextIsBSide) {
   s_prefs->putUChar(k, nextIsBSide ? 1 : 0);
 }
 
-static bool handleTapTempoPress(int footId, Foot* foot, uint16_t* outNewTapBpm) {
-  if (outNewTapBpm) *outNewTapBpm = 0;
-  if (!foot || footId < 0 || footId > 3) return false;
-
-  unsigned long now = millis();
-
-  // Se o tempo "voltou" (overflow/condição estranha), reseta a contagem.
-  if (s_tapCount[footId] > 0 && now < s_lastTapMs[footId]) {
-    s_tapCount[footId] = 1;
-    s_lastTapMs[footId] = now;
-    return false;
-  }
-
-  if (s_tapCount[footId] == 0) {
-    s_tapCount[footId] = 1;
-    s_lastTapMs[footId] = now;
-    return false;
-  }
-
-  unsigned long delta = now - s_lastTapMs[footId];
-  s_lastTapMs[footId] = now;
-  s_tapCount[footId] = (uint8_t)((s_tapCount[footId] < 255) ? (s_tapCount[footId] + 1) : 255);
-
-  if (delta == 0) {
-    s_tapCount[footId] = 1;
-    return false;
-  }
-
-  // Converte para BPM e valida a faixa pedida (40..250).
-  uint16_t bpm = (uint16_t)(60000UL / delta);
-  if (bpm < 40 || bpm > 250) {
-    s_tapCount[footId] = 1;
-    return false;
-  }
-
-  // Precisa de no mínimo 2 taps para "gerar" BPM.
-  if (s_tapCount[footId] < 2) return false;
-
-  s_tapBpm[footId] = bpm;
-  const unsigned long periodMs = 60000UL / (unsigned long)bpm;
-  s_nextBeatMs[footId] = now + periodMs;
-  foot->pulseLed(70);
-
-  if (outNewTapBpm) *outNewTapBpm = bpm;
-  return true;
-}
-
 bool MidiPresetRunner::handleFootPress(int footId, Foot* foot, uint16_t* outNewTapBpm) {
   if (outNewTapBpm) *outNewTapBpm = 0;
   if (!foot || !s_ble || footId < 0 || footId > 3) return false;
@@ -297,7 +242,35 @@ bool MidiPresetRunner::handleFootPress(int footId, Foot* foot, uint16_t* outNewT
   FootCfg& c = s_cfg[footId];
 
   if (c.mode == FootMode::TapTempo) {
-    return handleTapTempoPress(footId, foot, outNewTapBpm);
+    uint16_t bpm = 0;
+    bool updated = s_tap.onTap(footId, foot, &bpm);
+    if (outNewTapBpm) *outNewTapBpm = bpm;
+
+    if (updated && bpm >= 40 && bpm <= 300) {
+      // Envia CC 74 e 75 conforme regra:
+      // 40..127  -> CC74=0, CC75=40..127
+      // 128..255 -> CC74=1, CC75=0..127
+      // 256..300 -> CC74=2, CC75=0..44
+      uint8_t cc74 = 0;
+      uint8_t cc75 = 0;
+      if (bpm <= 127) {
+        cc74 = 0;
+        cc75 = (uint8_t)bpm;
+      } else if (bpm <= 255) {
+        cc74 = 1;
+        cc75 = (uint8_t)(bpm - 128);
+      } else {
+        cc74 = 2;
+        cc75 = (uint8_t)(bpm - 256);
+      }
+
+      // Canal fixo: 1 (0 no protocolo BLE MIDI).
+      const uint8_t ch = 0;
+      sendCCToBle(ch, 74, cc74);
+      sendCCToBle(ch, 75, cc75);
+    }
+
+    return updated;
   }
 
   if (c.uniqueMode) {
@@ -320,27 +293,8 @@ bool MidiPresetRunner::handleFootPress(int footId, Foot* foot, uint16_t* outNewT
 }
 
 void MidiPresetRunner::update(Foot* const feet[4]) {
-  if (!feet) return;
-  unsigned long now = millis();
-  for (int i = 0; i < 4; i++) {
-    if (!s_cfg[i].valid) continue;
-    if (s_cfg[i].mode != FootMode::TapTempo) continue;
-    uint16_t bpm = s_tapBpm[i];
-    if (bpm == 0) continue;
-
-    unsigned long next = s_nextBeatMs[i];
-    if ((long)(now - next) >= 0) {
-      unsigned long periodMs = 60000UL / (unsigned long)bpm;
-      feet[i]->pulseLed(70);
-
-      // Se atrasou muito (ex.: loop travou), reancora para frente.
-      if (now - next > (periodMs * 3)) {
-        s_nextBeatMs[i] = now + periodMs;
-      } else {
-        s_nextBeatMs[i] = next + periodMs;
-      }
-    }
-  }
+  bool enabled[4] = { isFootTapMode(0), isFootTapMode(1), isFootTapMode(2), isFootTapMode(3) };
+  s_tap.update(feet, enabled);
 }
 
 void MidiPresetRunner::scanIncomingBle(const uint8_t* d, size_t len) {
