@@ -80,10 +80,17 @@ void Foot::setState(bool on) {
   _saveState();
 }
 
-void Foot::pulseLed(unsigned long ms) {
-  _state = false;
-  _saveState();
+void Foot::pulseLed(unsigned long ms, bool persistState) {
+  if (persistState) {
+    _state = false;
+    _saveState();
+  }
   _led.pulseOnFor(ms);
+}
+
+void Foot::setLedBrightness(uint8_t percent) {
+  _led.setBrightness(percent);
+  _updateLed();
 }
 
 void Foot::setOnFootPress(FootPressCallback callback) {

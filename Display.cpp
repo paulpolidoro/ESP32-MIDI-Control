@@ -11,17 +11,6 @@ static constexpr uint8_t kIconBt8x8[] PROGMEM = {
   0b00011000,
 };
 
-static constexpr uint8_t kIconWifi8x8[] PROGMEM = {
-  0b00111100,
-  0b01000010,
-  0b00011000,
-  0b00100100,
-  0b00000000,
-  0b00011000,
-  0b00011000,
-  0b00000000,
-};
-
 Display::Display(uint8_t i2cAddress)
   : _addr(i2cAddress),
     _sdaPin(-1),
@@ -66,16 +55,9 @@ void Display::setInverted(bool inverted) {
   _oled.invertDisplay(inverted);
 }
 
-void Display::setBleState(BleState state) {
-  if (_bleState == state) return;
-  _bleState = state;
-  _statusDirty = true;
-}
-
-void Display::setWifi(bool connected, const IPAddress& ip) {
-  if (_wifiConnected == connected && _wifiIp == ip) return;
-  _wifiConnected = connected;
-  _wifiIp = ip;
+void Display::setConfigConnected(bool connected) {
+  if (_configConnected == connected) return;
+  _configConnected = connected;
   _statusDirty = true;
 }
 
@@ -89,17 +71,15 @@ void Display::setPreset(uint8_t preset1to10) {
 
 void Display::update() {
   const unsigned long kBlinkMs = 350;
-  if (_bleState == BleState::Connecting) {
-    if (millis() - _lastBleBlinkMs > kBlinkMs) {
-      _lastBleBlinkMs = millis();
-      _bleBlinkOn = !_bleBlinkOn;
+  if (_configConnected) {
+    if (millis() - _lastCfgBlinkMs > kBlinkMs) {
+      _lastCfgBlinkMs = millis();
+      _cfgBlinkOn = !_cfgBlinkOn;
       _statusDirty = true;
     }
-  } else {
-    if (!_bleBlinkOn) {
-      _bleBlinkOn = true;
-      _statusDirty = true;
-    }
+  } else if (!_cfgBlinkOn) {
+    _cfgBlinkOn = true;
+    _statusDirty = true;
   }
 
   _drawStatusBar(false);
@@ -120,54 +100,21 @@ void Display::_drawStatusBar(bool force) {
   // Limpa só a faixa do topo (0..10) pra não apagar o conteúdo abaixo.
   _oled.fillRect(0, 0, kWidth, 11, SSD1306_BLACK);
 
-  // BLE icon (x=0)
-  if (_bleState == BleState::Connected || _bleBlinkOn) {
-    _oled.drawBitmap(0, 1, kIconBt8x8, 8, 8, SSD1306_WHITE);
+  _oled.setCursor(0, 1);
+  _oled.setTextSize(1);
+  _oled.print("MIDI");
+
+  if (_configConnected && _cfgBlinkOn) {
+    _oled.drawBitmap(34, 1, kIconBt8x8, 8, 8, SSD1306_WHITE);
   }
 
-  // WiFi + IP justificado à direita
-  char ipBuf[16];
-  if (_wifiConnected) {
-    snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u", _wifiIp[0], _wifiIp[1], _wifiIp[2], _wifiIp[3]);
-  } else {
-    snprintf(ipBuf, sizeof(ipBuf), "--.--.--.--");
-  }
-
+  char pbuf[8];
+  snprintf(pbuf, sizeof(pbuf), "P%u", (unsigned)_preset);
   int16_t x1, y1;
   uint16_t w, h;
-  _oled.getTextBounds(ipBuf, 0, 0, &x1, &y1, &w, &h);
-
-  const int ipY = 1;
-  const int iconW = 8;
-  const int gap = 2;
-  const int rightPad = 1;
-
-  int ipX = (int)kWidth - rightPad - (int)w;
-  if (ipX < 20) ipX = 20;  // evita invadir o ícone do BLE
-
-  int iconX = ipX - gap - iconW;
-  if (iconX < 10) iconX = 10;
-
-  // Preset depois do Bluetooth: " P{n}"
-  char pbuf[6];
-  snprintf(pbuf, sizeof(pbuf), " P%u", (unsigned)_preset);
-  _oled.setCursor(10, 1);
-  _oled.setTextSize(1);
-  _oled.setTextColor(SSD1306_WHITE);
-  _oled.getTextBounds(pbuf, 10, 1, &x1, &y1, &w, &h);
-  int presetRight = 10 + (int)w;
-  if (presetRight < iconX - 2) {
-    _oled.print(pbuf);
-  }
-
-  if (_wifiConnected) {
-    _oled.drawBitmap(iconX, 1, kIconWifi8x8, 8, 8, SSD1306_WHITE);
-  } else {
-    _oled.drawRect(iconX, 1, 8, 8, SSD1306_WHITE);
-  }
-
-  _oled.setCursor(ipX, ipY);
-  _oled.print(ipBuf);
+  _oled.getTextBounds(pbuf, 0, 0, &x1, &y1, &w, &h);
+  _oled.setCursor((int)kWidth - (int)w - 1, 1);
+  _oled.print(pbuf);
 }
 
 void Display::_flush() {
@@ -179,23 +126,6 @@ void Display::showBoot(const char* title) {
   _header();
   _oled.setCursor(0, 16);
   _oled.print("Iniciando...");
-  _flush();
-}
-
-void Display::showWifiStatus(bool connected, const IPAddress& ip) {
-  setWifi(connected, ip);
-  _header();
-  _oled.setCursor(0, 16);
-  _oled.print("Status: ");
-  _oled.print(connected ? "conectado" : "desconectado");
-
-  _oled.setCursor(0, 28);
-  _oled.print("IP: ");
-  if (connected) {
-    _oled.print(ip);
-  } else {
-    _oled.print("-");
-  }
   _flush();
 }
 

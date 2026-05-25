@@ -1,15 +1,42 @@
 #include "MidiPresetRunner.h"
 #include "Foot.h"
-#include "Bluetooth.h"
+#include "HardwareMidi.h"
+#include "DeviceSettings.h"
 #include "TapTempo.h"
 #include <ArduinoJson.h>
 #include <strings.h>
 
-extern void sendCCToBle(uint8_t channel, uint8_t ccNumber, uint8_t value);
-
 static Preferences* s_prefs = nullptr;
-static Bluetooth* s_ble = nullptr;
+static HardwareMidi* s_midi = nullptr;
 static int s_activeSlot = 1;
+
+static uint8_t s_clockTick = 0;
+static unsigned long s_lastQuarterMs = 0;
+
+static Foot* const* s_feetRef = nullptr;
+
+static void sendTapBpmCc(uint16_t bpm) {
+  if (!s_midi || bpm < 40 || bpm > 300) return;
+  uint8_t cc74 = 0;
+  uint8_t cc75 = 0;
+  if (bpm <= 127) {
+    cc75 = (uint8_t)bpm;
+  } else if (bpm <= 255) {
+    cc74 = 1;
+    cc75 = (uint8_t)(bpm - 128);
+  } else {
+    cc74 = 2;
+    cc75 = (uint8_t)(bpm - 256);
+  }
+  s_midi->sendCC(0, 74, cc74);
+  s_midi->sendCC(0, 75, cc75);
+}
+
+static bool tapEnabledByFoot[4] = { false, false, false, false };
+
+static void refreshTapEnabledFlags() {
+  for (int i = 0; i < 4; i++) tapEnabledByFoot[i] = MidiPresetRunner::isFootTapMode(i);
+}
 
 enum class PresetLedMode : uint8_t { Off, On, Blink };
 enum class FootMode : uint8_t { Press, TapTempo };
@@ -52,10 +79,88 @@ static FootCfg s_cfg[4];
 static StaticJsonDocument<8192> s_jsonDoc;
 static TapTempo s_tap;
 
-void MidiPresetRunner::begin(Preferences& prefs, Bluetooth* ble) {
+void MidiPresetRunner::begin(Preferences& prefs, HardwareMidi* midi) {
   s_prefs = &prefs;
-  s_ble = ble;
+  s_midi = midi;
+  DeviceSettings::begin(prefs);
+  s_tap.setClockSyncEnabled(DeviceSettings::midiClockEnabled());
   reloadFromStorage();
+}
+
+void MidiPresetRunner::applyDeviceSettings(Foot* const feet[4]) {
+  s_feetRef = feet;
+  DeviceSettings::applyLedBrightness(feet);
+  s_tap.setClockSyncEnabled(DeviceSettings::midiClockEnabled());
+  if (!DeviceSettings::midiClockEnabled()) {
+    s_tap.onClockStop();
+    s_clockTick = 0;
+  }
+}
+
+uint8_t MidiPresetRunner::getLedBrightness() {
+  return DeviceSettings::ledBrightness();
+}
+
+bool MidiPresetRunner::isMidiClockEnabled() {
+  return DeviceSettings::midiClockEnabled();
+}
+
+bool MidiPresetRunner::isClockRunning() {
+  return s_tap.isClockRunning();
+}
+
+void MidiPresetRunner::saveDeviceSettings(uint8_t ledBrightness, bool midiClockEnabled) {
+  DeviceSettings::setLedBrightness(ledBrightness);
+  DeviceSettings::setMidiClockEnabled(midiClockEnabled);
+  DeviceSettings::save();
+  if (s_feetRef) applyDeviceSettings(s_feetRef);
+}
+
+void MidiPresetRunner::onMidiRealtime(uint8_t byte) {
+  if (!DeviceSettings::midiClockEnabled()) return;
+
+  if (byte == 0xFA) {
+    s_clockTick = 0;
+    s_lastQuarterMs = 0;
+    s_tap.onClockStop();
+    return;
+  }
+  if (byte == 0xFC) {
+    s_clockTick = 0;
+    s_lastQuarterMs = 0;
+    s_tap.onClockStop();
+    return;
+  }
+  if (byte == 0xFB) {
+    s_clockTick = 0;
+    return;
+  }
+  if (byte != 0xF8) return;
+
+  s_clockTick++;
+  if (s_clockTick < 24) return;
+
+  s_clockTick = 0;
+  refreshTapEnabledFlags();
+
+  if (s_feetRef) {
+    s_tap.onClockPulse(s_feetRef, tapEnabledByFoot);
+  }
+
+  unsigned long now = millis();
+  if (s_lastQuarterMs == 0) {
+    s_lastQuarterMs = now;
+    return;
+  }
+
+  unsigned long quarterMs = now - s_lastQuarterMs;
+  s_lastQuarterMs = now;
+  if (quarterMs < 100 || quarterMs > 1500) return;
+
+  uint16_t bpm = (uint16_t)(60000UL / quarterMs);
+  if (bpm < 40 || bpm > 300) return;
+
+  s_tap.setClockBpm(bpm, tapEnabledByFoot);
 }
 
 static bool typeEq(const String& a, const char* lit) {
@@ -63,7 +168,8 @@ static bool typeEq(const String& a, const char* lit) {
 }
 
 bool MidiPresetRunner::executeOneLine(const String& line) {
-  if (!s_ble || line.length() == 0) return false;
+  if (!s_midi || line.length() == 0) return false;
+
   String parts[6];
   int n = 0;
   int st = 0;
@@ -92,7 +198,7 @@ bool MidiPresetRunner::executeOneLine(const String& line) {
     } else {
       return false;
     }
-    s_ble->sendPC(ch, prog);
+    s_midi->sendPC(ch, prog);
     return true;
   }
 
@@ -100,7 +206,7 @@ bool MidiPresetRunner::executeOneLine(const String& line) {
     int ccn = parts[2].toInt();
     int val = parts[3].toInt();
     if (ccn < 0 || ccn > 127 || val < 0 || val > 127) return false;
-    sendCCToBle(ch, (uint8_t)ccn, (uint8_t)val);
+    s_midi->sendCC(ch, (uint8_t)ccn, (uint8_t)val);
     return true;
   }
 
@@ -136,10 +242,7 @@ void MidiPresetRunner::parsePresetJson(const String& json) {
 
   s_jsonDoc.clear();
   DeserializationError err = deserializeJson(s_jsonDoc, json.c_str());
-  if (err) {
-    Serial.printf("[Preset] JSON erro: %s\n", err.c_str());
-    return;
-  }
+  if (err) return;
 
   JsonArray feet = s_jsonDoc["feet"];
   if (feet.isNull()) return;
@@ -197,7 +300,7 @@ void MidiPresetRunner::reloadFromStorage() {
   snprintf(key, sizeof(key), "p%d", s_activeSlot);
   String j = s_prefs->getString(key, "");
   parsePresetJson(j);
-  Serial.printf("[Preset] slot ativo=%d (%u bytes)\n", s_activeSlot, (unsigned)j.length());
+  refreshTapEnabledFlags();
 }
 
 void MidiPresetRunner::setActivePreset(int preset1to10) {
@@ -236,7 +339,7 @@ void MidiPresetRunner::setToggleNextIsBSide(int footId, bool nextIsBSide) {
 
 bool MidiPresetRunner::handleFootPress(int footId, Foot* foot, uint16_t* outNewTapBpm) {
   if (outNewTapBpm) *outNewTapBpm = 0;
-  if (!foot || !s_ble || footId < 0 || footId > 3) return false;
+  if (!foot || !s_midi || footId < 0 || footId > 3) return false;
   if (!s_cfg[footId].valid) return false;
 
   FootCfg& c = s_cfg[footId];
@@ -247,27 +350,7 @@ bool MidiPresetRunner::handleFootPress(int footId, Foot* foot, uint16_t* outNewT
     if (outNewTapBpm) *outNewTapBpm = bpm;
 
     if (updated && bpm >= 40 && bpm <= 300) {
-      // Envia CC 74 e 75 conforme regra:
-      // 40..127  -> CC74=0, CC75=40..127
-      // 128..255 -> CC74=1, CC75=0..127
-      // 256..300 -> CC74=2, CC75=0..44
-      uint8_t cc74 = 0;
-      uint8_t cc75 = 0;
-      if (bpm <= 127) {
-        cc74 = 0;
-        cc75 = (uint8_t)bpm;
-      } else if (bpm <= 255) {
-        cc74 = 1;
-        cc75 = (uint8_t)(bpm - 128);
-      } else {
-        cc74 = 2;
-        cc75 = (uint8_t)(bpm - 256);
-      }
-
-      // Canal fixo: 1 (0 no protocolo BLE MIDI).
-      const uint8_t ch = 0;
-      sendCCToBle(ch, 74, cc74);
-      sendCCToBle(ch, 75, cc75);
+      sendTapBpmCc(bpm);
     }
 
     return updated;
@@ -297,16 +380,12 @@ void MidiPresetRunner::update(Foot* const feet[4]) {
   s_tap.update(feet, enabled);
 }
 
-void MidiPresetRunner::scanIncomingBle(const uint8_t* d, size_t len) {
+void MidiPresetRunner::scanIncomingMidi(const uint8_t* d, size_t len) {
   if (!d || len < 2) return;
-  for (size_t i = 0; i + 1 < len; i++) {
-    uint8_t status = d[i];
-    if ((status & 0xF0) == 0xC0) {
-      uint8_t prog = d[i + 1];
-      if (prog >= 1 && prog <= 10) {
-        setActivePreset((int)prog);
-      }
-      i++;
+  if ((d[0] & 0xF0) == 0xC0) {
+    uint8_t prog = d[1];
+    if (prog >= 1 && prog <= 10) {
+      setActivePreset((int)prog);
     }
   }
 }

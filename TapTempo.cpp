@@ -63,7 +63,37 @@ bool TapTempo::onTap(int footId, Foot* foot, uint16_t* outNewBpm) {
   return true;
 }
 
+void TapTempo::setClockSyncEnabled(bool enabled) {
+  _clockSync = enabled;
+  if (!enabled) {
+    _clockRunning = false;
+    _clockBpm = 0;
+  }
+}
+
+void TapTempo::onClockStop() {
+  _clockRunning = false;
+}
+
+void TapTempo::onClockPulse(Foot* const feet[4], const bool enabledByFoot[4]) {
+  if (!feet || !enabledByFoot) return;
+  _clockRunning = true;
+  for (int i = 0; i < 4; i++) {
+    if (!enabledByFoot[i]) continue;
+    feet[i]->pulseLed(70, false);
+  }
+}
+
+void TapTempo::setClockBpm(uint16_t bpm, const bool enabledByFoot[4]) {
+  if (!enabledByFoot || bpm < 40 || bpm > 300) return;
+  _clockBpm = bpm;
+  for (int i = 0; i < 4; i++) {
+    if (enabledByFoot[i]) _bpm[i] = bpm;
+  }
+}
+
 void TapTempo::update(Foot* const feet[4], const bool enabledByFoot[4]) {
+  if (_clockSync && _clockRunning) return;
   if (!feet || !enabledByFoot) return;
   unsigned long now = millis();
 
@@ -93,6 +123,7 @@ uint16_t TapTempo::getBpm(int footId) const {
 
 uint16_t TapTempo::getAnyBpm(const bool enabledByFoot[4]) const {
   if (!enabledByFoot) return 0;
+  if (_clockSync && _clockRunning && _clockBpm > 0) return _clockBpm;
   for (int i = 0; i < 4; i++) {
     if (enabledByFoot[i] && _bpm[i] > 0) return _bpm[i];
   }

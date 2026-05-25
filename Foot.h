@@ -20,7 +20,8 @@ public:
   bool getState() const { return _state; }
 
   void setState(bool on);
-  void pulseLed(unsigned long ms = 500);
+  void pulseLed(unsigned long ms = 500, bool persistState = true);
+  void setLedBrightness(uint8_t percent);
 
   typedef void (*FootPressCallback)(int footId, Foot* foot);
   void setOnFootPress(FootPressCallback callback);

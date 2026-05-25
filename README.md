@@ -1,112 +1,111 @@
-# Controlador MIDI (ESP32) — 4 Footswitches + BLE MIDI + Web Presets (Wi‑Fi)
+# Controlador MIDI (ESP32)
 
-Projeto de **controlador MIDI para ESP32** com:
+Controlador com **4 footswitches**, **MIDI por cabo DIN**, **display OLED** e **configuração via Bluetooth** (app Polimidi).
 
-- **4 footswitches** (cada um com **LED dedicado**)
-- **MIDI via BLE** (Bluetooth Low Energy)
-- **Display OLED SSD1306 via I2C**
-- **Configuração de presets via Wi‑Fi** (página web) — opcional
-- **Tap Tempo** por footswitch (modo configurável por preset)
+Cliente de configuração: [`client_python/`](client_python/README.md) (PyQt6).
 
-## Hardware (pinos usados)
+---
 
-### Footswitches e LEDs
-Cada footswitch usa 2 pinos: **{botão, LED}**.
+## Mapa de pinos (ESP32 clássico)
 
-| Foot | Botão (GPIO) | LED (GPIO) |
-|------|--------------|------------|
-| 1    | 18           | 19         |
-| 2    | 4            | 5          |
-| 3    | 12           | 13         |
-| 4    | 22           | 23         |
+| GPIO | Função | Observação |
+|------|--------|------------|
+| **4** | Foot 2 — botão | Entrada, pull-up interno |
+| **5** | Foot 2 — LED | Saída |
+| **12** | Foot 3 — botão | Entrada |
+| **13** | Foot 3 — LED | Saída |
+| **14** | **MIDI TX** (Serial2) | Saída UART → circuito MIDI OUT (DIN) |
+| **18** | Foot 1 — botão | Entrada |
+| **19** | Foot 1 — LED | Saída |
+| **21** | OLED **SDA** (I2C) | Endereço `0x3C` |
+| **22** | Foot 4 — botão | Entrada |
+| **23** | Foot 4 — LED | Saída |
+| **27** | OLED **SCL** (I2C) | SCL em 27 (22 ocupado pelo foot 4) |
+| **34** | **MIDI RX** (Serial2) | **Só entrada**, máx. **3,3 V** — opto no MIDI IN |
+| **1 / 3** | USB-Serial | Opcional (monitor serial, se habilitado na placa) |
 
-> Fonte: `FOOT_PINS` em `controlador_midi.ino`.
+**Não use GPIO 35 para TX** — pinos **34–39** são somente entrada no ESP32 clássico.
 
-### Display OLED (SSD1306 I2C)
+**BLE** (`polimidi`) usa rádio interno; não ocupa GPIO.
 
-- **I2C SDA**: GPIO **21**
-- **I2C SCL**: GPIO **27**
-- **Endereço I2C**: `0x3C`
+---
 
-> Observação: o projeto usa **SCL em 27** porque o GPIO 22 já está ocupado (footswitch 4).
+## MIDI (Serial2 @ 31250 baud)
 
-## BLE MIDI
+| Direção | GPIO | Circuito |
+|---------|------|----------|
+| ESP → pedaleira (OUT) | **14** | GPIO 14 → transistor NPN → DIN pino 5; pino 4 → GND |
+| Pedaleira → ESP (IN) | **34** | DIN pino 5 → opto (6N138/PC900) → GPIO 34 (3,3 V) |
 
-- **Nome do dispositivo BLE**: `MidiPortA`
-- **Service UUID**: `03b80e5a-ede8-4b33-a751-6ce34ec4c700`
-- **Characteristic UUID**: `7772e5db-3868-4112-a1a9-f2669d106bf3`
-
-### Tap Tempo (CCs enviados)
-Quando um foot está em modo **Tap Tempo**, o BPM calculado (faixa **40–300**) é enviado via BLE como:
-
-- **CC 74**: “byte alto” do BPM (0, 1 ou 2)
-- **CC 75**: “byte baixo” do BPM
-
-Mapeamento:
-
-- 40..127  → CC74 = 0, CC75 = 40..127  
-- 128..255 → CC74 = 1, CC75 = 0..127  
-- 256..300 → CC74 = 2, CC75 = 0..44  
-
-Canal fixo usado pelo código: **canal 1** (no protocolo MIDI isso vira `0` internamente).
-
-## Wi‑Fi + página web (opcional)
-
-Quando habilitado, o ESP32 tenta conectar em uma rede Wi‑Fi e sobe um servidor HTTP na porta **80** com endpoints para:
-
-- listar presets (`/presets`)
-- ler preset ativo (`/active`)
-- trocar preset ativo (`/setActive`, POST)
-- salvar preset (`/save`, POST)
-- página inicial (`/`)
-
-### Arquivo de segredos (não versionar)
-O projeto inclui `wifi_secrets.h` para SSID/senha e rede (IP fixo). **Não suba esse arquivo para o GitHub**.
-
-Se ele não existir no seu ambiente, crie um `wifi_secrets.h` seguindo a ideia abaixo (exemplo):
+Se o OUT não funcionar, em `HardwareMidi.h` teste:
 
 ```cpp
-// wifi_secrets.h (exemplo)
-#pragma once
-#include <WiFi.h>
-
-#define WIFI_SSID "SUA_REDE"
-#define WIFI_PASS "SUA_SENHA"
-
-static const IPAddress WIFI_LOCAL_IP(192,168,1,70);
-static const IPAddress WIFI_GATEWAY(192,168,1,1);
-static const IPAddress WIFI_SUBNET(255,255,255,0);
-static const IPAddress WIFI_DNS_PRIMARY(1,1,1,1);
-static const IPAddress WIFI_DNS_SECONDARY(8,8,8,8);
+#define MIDI_UART_INVERT true
 ```
 
-Sugestão: adicione ao seu `.gitignore`:
+### Comandos por foot (preset)
 
-```gitignore
-wifi_secrets.h
-```
+Formato por linha: `canal-tipo-parâmetros`
 
-## Compilação / Upload (Arduino IDE)
+- `1-PC-1` — Program Change, canal 1, programa 1  
+- `1-CC-50-12` — Control Change 50, valor 12  
 
-### Memória flash (partição)
-O sketch pode ficar grande por causa do Wi‑Fi/Web. Se aparecer erro de “flash cheia”, use:
+### Tap Tempo
 
-- **Ferramentas → Esquema de partições → “Huge APP (3MB No OTA/1MB SPIFFS)”**
+Foot em modo tap envia no **canal 1**: **CC 74** + **CC 75** (BPM 40–300).
 
-Se preferir compilar **sem Wi‑Fi/página web**, desabilite a flag:
+### MIDI Clock (sincronização com pedaleira)
 
-- No topo de `controlador_midi.ino`:
-  - `#define ENABLE_WIFI_WEB 0`
+Com **relógio MIDI** habilitado (aba Configurações no app), o dispositivo escuta mensagens no MIDI IN:
 
-### Placa
-O código é para **ESP32** (Arduino core ESP32). Selecione a placa equivalente ao seu módulo (ex.: DevKit).
+| Byte | Função |
+|------|--------|
+| `0xF8` | Clock (24 ticks = 1 semínima) |
+| `0xFA` | Start |
+| `0xFB` | Continue |
+| `0xFC` | Stop |
 
-## Estrutura (arquivos principais)
+O BPM é calculado a partir do intervalo entre semínimas. Com foot em **Tap Tempo**, o LED pulsa no beat e o BPM aparece no display. **CC 74/75 só são enviados no tap manual pelo foot**, não quando o tempo vem do clock externo.
 
-- `controlador_midi.ino`: setup/loop, pinos, display, BLE, web server (opcional)
-- `MidiPresetRunner.*`: lógica de presets, execução de comandos, Tap Tempo e persistência (NVS/Preferences)
-- `TapTempo.*`: cálculo do BPM por taps e “batida” para piscar LED
+### Preset via MIDI IN
 
-## Licença
-Defina a licença do repositório conforme sua preferência (MIT, GPL, etc.).
+**Program Change** com programa **1–10** (byte MIDI 1–10) troca o preset ativo.
 
+---
+
+## Configuração BLE GATT
+
+| Item | Valor |
+|------|--------|
+| Nome | `polimidi` |
+| Serviço | `7a5e9c10-b4d2-4e8f-9a1c-3d6f8e2b1a04` |
+| Comando (write) | `7a5e9c10-b4d2-4e8f-9a1c-3d6f8e2b1a05` |
+| Resposta (notify) | `7a5e9c10-b4d2-4e8f-9a1c-3d6f8e2b1a06` |
+
+10 presets independentes; cada foot (A–D) com listas A/B, LEDs e modo tap.
+
+Comandos BLE adicionais: `get_settings` / `save_settings` (`ledBrightness` 0–100, `midiClock` bool).
+
+---
+
+## Compilação (Arduino IDE)
+
+- Placa: **ESP32**
+- Bibliotecas: **ArduinoJson**, **Adafruit SSD1306/GFX**
+- Ative **Bluetooth** nas ferramentas da placa
+
+---
+
+## Estrutura do firmware
+
+| Arquivo | Função |
+|---------|--------|
+| `controlador_midi.ino` | Setup, loop, pinos |
+| `HardwareMidi.*` | UART MIDI (Serial2) |
+| `ConfigBle.*` | Servidor BLE GATT |
+| `MidiPresetRunner.*` | Presets, comandos, tap tempo, MIDI clock, NVS |
+| `DeviceSettings.*` | Brilho LED e flag MIDI Clock (NVS) |
+| `Foot.*` / `Led.*` | Footswitches e LEDs |
+| `Display.*` | OLED SSD1306 |
+| `TapTempo.*` | Cálculo de BPM |
+| `client_python/` | Configurador PyQt6 |

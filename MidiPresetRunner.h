@@ -4,12 +4,12 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
-class Bluetooth;
+class HardwareMidi;
 class Foot;
 
 class MidiPresetRunner {
 public:
-  static void begin(Preferences& prefs, Bluetooth* ble);
+  static void begin(Preferences& prefs, HardwareMidi* midi);
 
   /** Chamado pelo Foot a cada borda de pressão (modo preset). */
   static bool handleFootPress(int footId, Foot* foot, uint16_t* outNewTapBpm);
@@ -17,8 +17,17 @@ public:
   /** Chamado no loop(): mantém pisca do Tap Tempo (LED do foot). */
   static void update(Foot* const feet[4]);
 
-  /** Varre o pacote BLE MIDI recebido: PC com programa 1–10 em qualquer canal troca o preset. */
-  static void scanIncomingBle(const uint8_t* data, size_t length);
+  /** PC com programa 1–10 em qualquer canal troca o preset ativo. */
+  static void scanIncomingMidi(const uint8_t* data, size_t length);
+
+  /** MIDI realtime: clock F8, start FA, continue FB, stop FC. */
+  static void onMidiRealtime(uint8_t byte);
+
+  static void applyDeviceSettings(Foot* const feet[4]);
+  static uint8_t getLedBrightness();
+  static bool isMidiClockEnabled();
+  static bool isClockRunning();
+  static void saveDeviceSettings(uint8_t ledBrightness, bool midiClockEnabled);
 
   static void setActivePreset(int preset1to10);
   static int getActivePreset();
@@ -26,7 +35,7 @@ public:
   /** Recarrega JSON do slot ativo (p1..p10) e aplica na RAM. */
   static void reloadFromStorage();
 
-  /** Depois de salvar via web: reparse se for o slot em uso. */
+  /** Depois de salvar via BLE: reparse se for o slot em uso. */
   static void notifyPresetSlotSaved(int slot1to10);
 
   /** UI: nome do foot (até 10 chars, pode ser vazio). */

@@ -8,11 +8,6 @@
 
 class Display {
 public:
-  enum class BleState : uint8_t {
-    Connecting = 0,
-    Connected  = 1,
-  };
-
   // I2C típico do SSD1306: 0x3C (às vezes 0x3D)
   explicit Display(uint8_t i2cAddress = 0x3C);
   Display(uint8_t i2cAddress, int sdaPin, int sclPin);
@@ -23,16 +18,13 @@ public:
   void clear();
   void setInverted(bool inverted);
 
-  // Barra de status (topo): BLE (pisca ao conectar, sólido ao conectar),
-  // WiFi + IP, e preset (P1..P10).
-  void setBleState(BleState state);
-  void setWifi(bool connected, const IPAddress& ip);
+  // Barra de status: MIDI + preset; ícone BT pisca quando config serial conectada.
+  void setConfigConnected(bool connected);
   void setPreset(uint8_t preset1to10);
-  void update();  // chama no loop para piscar ícone do BLE
+  void update();
 
   // Helpers de telas comuns
   void showBoot(const char* title = "Controlador MIDI");
-  void showWifiStatus(bool connected, const IPAddress& ip);
   void showPreset(uint8_t preset1to10);
   void showBpm(uint16_t bpm);
   void showDashboard(const char* footA, const char* footB, const char* footC, const char* footD, bool tapActive, uint16_t bpmOr0);
@@ -48,12 +40,10 @@ private:
   int _sclPin;
   Adafruit_SSD1306 _oled;
 
-  BleState _bleState = BleState::Connecting;
-  bool _wifiConnected = false;
-  IPAddress _wifiIp = IPAddress(0, 0, 0, 0);
+  bool _configConnected = false;
   uint8_t _preset = 1;
-  bool _bleBlinkOn = true;
-  unsigned long _lastBleBlinkMs = 0;
+  bool _cfgBlinkOn = true;
+  unsigned long _lastCfgBlinkMs = 0;
   bool _statusDirty = true;
 
   void _header();             // desenha a barra de status no topo

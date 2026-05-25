@@ -2,7 +2,7 @@
 
 Led::Led(uint8_t pin)
   : _pin(pin),
-    _brightness(5),
+    _brightness(100),
     _state(false),
     _flashing(false),
     _interval(50),
